@@ -63,8 +63,15 @@
  * this is based                                  *
  **************************************************
  Updates:
+   Feb 24, 2023: KW
+       * Simplified HV programming
+       * Added dumpConfig() to make the set/clear flag functions more intuitive
+       * Added line breaks to dumpMemory() output for clarity
+       * Made the main menu case-insensitive
+       * Fixed bug that caused the "clear flag" to clear all flags, not just the selected one
+ 
    Dec 04, 2017: thejamestate@gmail.com
-   		* Added support for ATtiny102 and ATtiny104
+       * Added support for ATtiny102 and ATtiny104
    Jan 23, 2017: Ksdsksd@gmail.com
                 * Thanks to InoueTaichi Fixed incorrect #define Tiny40 
                 
@@ -117,6 +124,8 @@
 
 #include <SPI.h>
 #include "pins_arduino.h"
+char HVP = true; // is high voltage programming on by default?
+char HVON = HIGH;    // what is the active level for high voltage programming?
 
 // define the instruction set bytes
 #define SLD    0x20
@@ -168,8 +177,6 @@ uint8_t b, b1, b2, b3;
 boolean idChecked;
 boolean correct;
 char type; // type of chip connected 1 = Tiny10, 2 = Tiny20
-char HVP = 0;
-char HVON = 0;
 
 int counti = 0;
 
@@ -182,9 +189,21 @@ void setup(){
   SPI.setDataMode(SPI_MODE0);
   SPI.setClockDivider(SPI_CLOCK_DIV32);
 
-*/  start_tpi();
-
+*/  
+  digitalWrite(HVReset, !HVON);
+  digitalWrite(SS, !HVP);
   pinMode(HVReset, OUTPUT);
+  pinMode(SS, OUTPUT);
+//  quickReset();
+//  digitalWrite(HVReset, LOW);
+//  digitalWrite(SS, HIGH);
+//delay(5000);
+  digitalWrite(HVReset, HIGH);
+delay(1000);
+
+  start_tpi();
+
+
  // initialize memory pointer register
  setPointer(0x0000);
 
@@ -221,14 +240,18 @@ void hvReset(char highLow)
 
 void quickReset()
 {
-    digitalWrite(SS,HIGH);
+    //digitalWrite(SS,HIGH);
+    hvReset(HIGH);
     delay(1);
-    digitalWrite(SS,LOW);
+//    digitalWrite(SS,LOW);
+    hvReset(LOW);
     delay(10);
-    digitalWrite(SS,HIGH);
+//    digitalWrite(SS,HIGH);
+    hvReset(HIGH);
 }
 
 void start_tpi() {
+  Serial.println(F("Initializing..."));
   SPI.begin();
   SPI.setBitOrder(LSBFIRST);
   SPI.setDataMode(SPI_MODE0);
@@ -278,44 +301,52 @@ void loop(){
 
   switch( comnd ){
     case 'r':
-    case'R':
+    case 'R':
         quickReset();
         break;
 
+    case 'd':
     case 'D':
       dumpMemory();
       break;
 
+  case 'h':
   case 'H':
     HVP = !HVP;
     hvserial();
     break;
 
+  case 't':
   case 'T':
     HVON = !HVON;
     hvserial();
     break;
 
-
+  case 'p':
   case 'P':
       if(!writeProgram()){
         startTime = millis();
         while(millis()-startTime < 8000)
           Serial.read();// if exited due to error, disregard all other serial data
       }
-
     break;
 
+  case 'e':
   case 'E':
     eraseChip();
     break;
 
+  case 's':
   case 'S':
     setConfig(true);
     break;
 
+  case 'c':
   case 'C':
     setConfig(false);
+    break;
+
+  case ' ':
     break;
 
   default:
@@ -351,6 +382,36 @@ void ERROR_data(char i)
 
 }
 
+void dumpConfig(){
+  uint8_t i;
+  adrs = 0x3F40;
+  setPointer(adrs);
+  Serial.print(F("Current config state: "));
+  tpi_send_byte(SLDp);
+  b = tpi_receive_byte(); // get data byte
+  Serial.print(F("0x"));
+  outHex(b, 2);
+   
+  if (b & 0x04)
+    Serial.print(F("\n  [ ] "));
+  else
+    Serial.print(F("\n  [√] "));
+  Serial.print(F("Output clock to PB2"));
+    
+  if (b & 0x02)
+    Serial.print(F("\n  [ ] "));
+  else
+    Serial.print(F("\n  [√] "));
+  Serial.print(F("Watch dog timer always on"));
+    
+  if (b & 0x01)
+    Serial.print(F("\n  [ ] "));
+  else
+    Serial.print(F("\n  [√] "));
+  Serial.print(F("Disable external reset on PB3"));
+
+  Serial.println(F(" "));
+}
 
 //  print the register, SRAM, config and signature memory
 void dumpMemory(){
@@ -387,13 +448,12 @@ void dumpMemory(){
           |(0x3F80 == adrs) // calibration
           |(0x3FC0 == adrs) // ID
           |(0x4000 == adrs) ) {
-        Serial.println();
         if(adrs == 0x0000){ Serial.print(F("registers, SRAM")); }
-        if(adrs == 0x3F00){ Serial.print(F("NVM lock")); }
-        if(adrs == 0x3F40){ Serial.print(F("configuration")); }
-        if(adrs == 0x3F80){ Serial.print(F("calibration")); }
-        if(adrs == 0x3FC0){ Serial.print(F("device ID")); }
-        if(adrs == 0x4000){ Serial.print(F("program")); }
+        if(adrs == 0x3F00){ Serial.print(F("\n\nNVM lock")); }
+        if(adrs == 0x3F40){ Serial.print(F("\n\nconfiguration")); }
+        if(adrs == 0x3F80){ Serial.print(F("\n\ncalibration")); }
+        if(adrs == 0x3FC0){ Serial.print(F("\n\ndevice ID")); }
+        if(adrs == 0x4000){ Serial.print(F("\n\nprogram")); }
         Serial.println();
         for (i = 0; i < 5; i++)
           Serial.print(F(" "));
@@ -436,6 +496,7 @@ boolean writeProgram(){
   correct = true;
   unsigned long pgmStartTime = millis();
   eraseChip(); // erase chip
+  Serial.println(F("\nSend hex file contents now"));
   char words = (type!=Tiny4_5?type:1);
   char b1, b2;
   // read in the data and
@@ -610,53 +671,76 @@ void eraseChip(){
 
 void setConfig(boolean val){
   // get current config byte
+  dumpConfig();
   setPointer(0x3F40);
   tpi_send_byte(SLD);
   b = tpi_receive_byte();
 
-  Serial.println(F("input one of these letters"));
-  Serial.println(F("c = system clock output"));
-  Serial.println(F("w = watchdog timer on"));
-  Serial.println(F("r = disable reset"));
-  Serial.println(F("x = cancel. don't change anything"));
+  Serial.print(F("\nInput one of these letters to "));
+  if (val)
+    Serial.println(F("activate it"));
+  else
+    Serial.println(F("deactivate it"));    
+  Serial.println(F(" c = system clock output"));
+  Serial.println(F(" w = watchdog timer on"));
+  Serial.println(F(" r = disable reset"));
+  Serial.println(F(" x = cancel. don't change anything"));
 
   while(Serial.available() < 1){
     // wait
   }
   char comnd = Serial.read();
   setPointer(0x3F40);
-  writeIO(NVMCMD, (val ? NVM_WORD_WRITE : NVM_SECTION_ERASE) );
+  if ((!val) & ((comnd == 'c') | (comnd == 'w') | (comnd == 'r')))
+  {
+    writeIO(NVMCMD, NVM_SECTION_ERASE);
+    tpi_send_byte(SSTp);
+    tpi_send_byte(0xFF);
+    tpi_send_byte(SSTp);
+    tpi_send_byte(0xFF);
+    while((readIO(NVMCSR) & (1<<7)) != 0x00)  // wait for write to finish
+    writeIO(NVMCMD, NVM_NOP);
+    SPI.transfer(0xff);
+    SPI.transfer(0xff);
+    setPointer(0x3F40);
+  }
+//  writeIO(NVMCMD, (val ? NVM_WORD_WRITE : NVM_SECTION_ERASE) );
+writeIO(NVMCMD, NVM_WORD_WRITE);
 
   if(comnd == 'c'){
     tpi_send_byte(SSTp);
-	if(val){
-	  tpi_send_byte(b & 0b11111011);
+    if(val){
+      tpi_send_byte(b & 0b11111011);
     }else{
       tpi_send_byte(b | 0x04);
     }
-	tpi_send_byte(SSTp);
-	tpi_send_byte(0xFF);
-  }else if(comnd == 'w'){
     tpi_send_byte(SSTp);
-	if(val){
-	  tpi_send_byte(b & 0b11111101);
+    tpi_send_byte(0xFF);
+  }
+  else if(comnd == 'w'){
+    tpi_send_byte(SSTp);
+    if(val){
+      tpi_send_byte(b & 0b11111101);
     }else{
       tpi_send_byte(b | 0x02);
     }
-	tpi_send_byte(SSTp);
-	tpi_send_byte(0xFF);
-  }else if(comnd == 'r'){
     tpi_send_byte(SSTp);
-	if(val){
-	  tpi_send_byte(b & 0b11111110);
+    tpi_send_byte(0xFF);
+  }
+  else if(comnd == 'r'){
+    tpi_send_byte(SSTp);
+    if(val){
+      tpi_send_byte(b & 0b11111110);
     }else{
       tpi_send_byte(b | 0x01);
     }
-	tpi_send_byte(SSTp);
-	tpi_send_byte(0xFF);
-  }else if(comnd == 'x'){
+    tpi_send_byte(SSTp);
+    tpi_send_byte(0xFF);
+  }
+  else if(comnd == 'x'){
     // do nothing
-  }else{
+  }
+  else{
     Serial.println(F("received unknown command. Cancelling"));
   }
   while((readIO(NVMCSR) & (1<<7)) != 0x00){
@@ -665,9 +749,9 @@ void setConfig(boolean val){
   writeIO(NVMCMD, NVM_NOP);
   SPI.transfer(0xff);
   SPI.transfer(0xff);
-  if(comnd != 'x'){
+  if((comnd == 'c') | (comnd == 'w') | (comnd == 'r')){
     
-    Serial.print(F("\n\nSuccessfully "));
+    Serial.print(F("\nSuccessfully "));
     if(val)
       Serial.print(F("Set "));
       else
@@ -681,8 +765,8 @@ void setConfig(boolean val){
     else if(comnd == 'r')
       Serial.print(F("Reset"));
       
-    Serial.println(F("\" Flag\n"));
-
+    Serial.println(F("\" Flag"));
+    dumpConfig();
   }
 }
 
