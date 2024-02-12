@@ -63,6 +63,8 @@
  * this is based                                  *
  **************************************************
  Updates:
+   Feb 12, 2024: petrov@email.su
+       * 
    Feb 24, 2023: KW
        * Simplified HV programming
        * Added dumpConfig() to make the set/clear flag functions more intuitive
@@ -126,6 +128,7 @@
 #include "pins_arduino.h"
 char HVP = true; // is high voltage programming on by default?
 char HVON = HIGH;    // what is the active level for high voltage programming?
+char SSN = LOW;    // what is the active level for SS (reset)?
 
 // define the instruction set bytes
 #define SLD    0x20
@@ -183,22 +186,17 @@ int counti = 0;
 void setup(){
   // set up serial
   Serial.begin(9600); // you cant increase this, it'll overrun the buffer
-  // set up SPI
-/*  SPI.begin();
-  SPI.setBitOrder(LSBFIRST);
-  SPI.setDataMode(SPI_MODE0);
-  SPI.setClockDivider(SPI_CLOCK_DIV32);
 
-*/  
-  digitalWrite(HVReset, !HVON);
-  digitalWrite(SS, !HVP);
-  pinMode(HVReset, OUTPUT);
-  pinMode(SS, OUTPUT);
-//  quickReset();
-//  digitalWrite(HVReset, LOW);
-//  digitalWrite(SS, HIGH);
-//delay(5000);
-  digitalWrite(HVReset, HIGH);
+	if (HVP) {
+		digitalWrite(HVReset, HVON);
+		pinMode(HVReset, OUTPUT);	
+	}
+	else {
+		digitalWrite(SS, SSN);
+		pinMode(SS, OUTPUT);
+	}
+  
+
 delay(1000);
 
   start_tpi();
@@ -219,9 +217,10 @@ void hvserial()
     else
         Serial.println(F("High Voltage Programming Disabled"));
 
-    Serial.print(F("Pin 9 "));
-    Serial.print(HVON?F("HIGH"):F("LOW"));
-    Serial.print(F(" supplies 12v"));
+    Serial.print(F("Pin "));
+	Serial.print(HVReset);
+    Serial.print(HVON?F(" HIGH"):F(" LOW"));
+    Serial.println(F(" supplies 12v"));
 
 }
 
@@ -235,11 +234,14 @@ void hvReset(char highLow)
         digitalWrite(HVReset, highLow);
     }
     else
+        if(SSN) //if high enables 12v
+            highLow = !highLow; // invert the typical reset
         digitalWrite(SS, highLow);
 }
 
 void quickReset()
 {
+    Serial.println(F("Reset."));
     //digitalWrite(SS,HIGH);
     hvReset(HIGH);
     delay(1);
@@ -284,11 +286,18 @@ void loop(){
     finish();
   }
   // when ready, send ready signal '.' and wait
+  Serial.println();
+  Serial.println(F("'P' = program the ATtiny using the read program"));
+  Serial.println(F("'D' = dump memory to serial monitor"));
+  Serial.println(F("'E' = erase chip. erases current program memory.(done automatically by 'P')"));
+  Serial.println(F("'S' = set fuse"));
+  Serial.println(F("'C' = clear fuse"));
+  Serial.println(F("'H' = Toggle High Voltage Programming"));
+  Serial.println(F("'T' = Toggle +12v enabled by High, or Low"));
   Serial.print(F("\n>"));
   while(Serial.available() < 1){
     // wait
   }
-  start_tpi();
 
   // the first byte is a command
   //** 'P' = program the ATtiny using the read program
@@ -307,7 +316,9 @@ void loop(){
 
     case 'd':
     case 'D':
+      start_tpi();
       dumpMemory();
+      finish();
       break;
 
   case 'h':
@@ -324,26 +335,34 @@ void loop(){
 
   case 'p':
   case 'P':
+      start_tpi();
       if(!writeProgram()){
         startTime = millis();
         while(millis()-startTime < 8000)
           Serial.read();// if exited due to error, disregard all other serial data
       }
+      finish();
     break;
 
   case 'e':
   case 'E':
+    start_tpi();
     eraseChip();
+    finish();
     break;
 
   case 's':
   case 'S':
+    start_tpi();
     setConfig(true);
+    finish();
     break;
 
   case 'c':
   case 'C':
+    start_tpi();
     setConfig(false);
+    finish();
     break;
 
   case ' ':
@@ -353,7 +372,7 @@ void loop(){
     Serial.println(F("Received unknown command"));
   }
 
-  finish();
+
 
 
 }
@@ -491,8 +510,6 @@ boolean writeProgram(){
   progSize = 0;
   uint8_t linelength = 0;
   boolean fileEnd = false;
-  unsigned short tadrs;
-  tadrs = adrs = 0x4000;
   correct = true;
   unsigned long pgmStartTime = millis();
   eraseChip(); // erase chip
@@ -527,7 +544,10 @@ boolean writeProgram(){
     addr[1] = Sread();
     addr[2] = Sread();
     addr[3] = Sread();
-    if(linelength != 0x00 && addr[0]=='0' && addr[1]=='0' && addr[2]=='0' && addr[3]=='0')
+	
+    adrs = asciiHexToUShort(addr) + 0x4000;	
+	
+    if(linelength != 0x00 && adrs == 0x4000)
       currentByte = 0;
 
     // read type thingy. "01" means end of file
@@ -575,7 +595,7 @@ boolean writeProgram(){
         if( currentByte == 2 * words ){// is the word/Dword/Qword here?
 
           currentByte = 0; // yes, reset counter
-          setPointer(tadrs); // point to the address to program
+          setPointer(adrs); // point to the address to program
           writeIO(NVMCMD, NVM_WORD_WRITE);
           for(int i = 0; i<2 * words; i+=2){// loop for each word size depending on micro
 
@@ -595,7 +615,7 @@ boolean writeProgram(){
 
 
           //verify written words
-          setPointer(tadrs);
+          setPointer(adrs);
           for (int c = 0; c < 2 * words; c++){
             tpi_send_byte(SLDp);
             b = tpi_receive_byte(); // get data byte
@@ -615,7 +635,7 @@ boolean writeProgram(){
                 return false;
             }
           }
-          tadrs += 2 * words;
+          adrs += 2 * words;
       }
      }
 
@@ -951,6 +971,29 @@ void outHex(unsigned int n, char l){ // call with the number to be printed, and 
             break;  //exit the for loop
         }
     Serial.print(n, HEX);
+}
+
+#define CURRENT_DIGIT (*str)
+
+unsigned short asciiHexToUShort( char * str )
+{
+    int result = 0;
+
+    do
+    {
+        if ( (CURRENT_DIGIT >= '0') && (CURRENT_DIGIT <= '9') )
+        {
+            CURRENT_DIGIT = CURRENT_DIGIT - '0' + 0x0;
+        }
+        else if ( (CURRENT_DIGIT >= 'A') && (CURRENT_DIGIT <= 'F') )
+        {
+            CURRENT_DIGIT = CURRENT_DIGIT - 'A' + 0xA;
+        }
+        
+        result = (result<<4) + CURRENT_DIGIT;
+    }while (*++str);
+
+    return result;
 }
 
 // end of file
