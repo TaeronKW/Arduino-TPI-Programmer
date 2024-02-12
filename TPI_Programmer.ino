@@ -64,7 +64,8 @@
  **************************************************
  Updates:
    Feb 12, 2024: petrov@email.su
-       * 
+       * Address from HEX file.
+       * Small editing for convenience.
    Feb 24, 2023: KW
        * Simplified HV programming
        * Added dumpConfig() to make the set/clear flag functions more intuitive
