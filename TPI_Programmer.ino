@@ -188,14 +188,14 @@ void setup(){
   // set up serial
   Serial.begin(9600); // you cant increase this, it'll overrun the buffer
 
-	if (HVP) {
-		digitalWrite(HVReset, HVON);
+	
+		digitalWrite(HVReset, !HVON);
 		pinMode(HVReset, OUTPUT);	
-	}
-	else {
-		digitalWrite(SS, SSN);
+	
+	
+		digitalWrite(SS, !SSN);
 		pinMode(SS, OUTPUT);
-	}
+	
   
 
 delay(1000);
