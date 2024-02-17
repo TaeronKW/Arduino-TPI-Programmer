@@ -129,7 +129,7 @@
 #include "pins_arduino.h"
 char HVP = true; // is high voltage programming on by default?
 char HVON = HIGH;    // what is the active level for high voltage programming?
-char SSN = LOW;    // what is the active level for SS (reset)?
+const char SSN = LOW;    // what is the active level for SS (reset)?
 
 // define the instruction set bytes
 #define SLD    0x20
@@ -167,6 +167,7 @@ char SSN = LOW;    // what is the active level for SS (reset)?
 #define TimeOut 1
 #define HexError 2
 #define TooLarge 3
+#define Checksum 4
 // represents the current pointer register value
 unsigned short adrs = 0x0000;
 
@@ -179,7 +180,7 @@ long startTime;
 int timeout;
 uint8_t b, b1, b2, b3;
 boolean idChecked;
-boolean correct;
+//boolean correct;
 char type; // type of chip connected 1 = Tiny10, 2 = Tiny20
 
 int counti = 0;
@@ -191,11 +192,11 @@ void setup(){
 	
 		digitalWrite(HVReset, !HVON);
 		pinMode(HVReset, OUTPUT);	
-	
-	
+
+
 		digitalWrite(SS, !SSN);
 		pinMode(SS, OUTPUT);
-	
+
   
 
 delay(1000);
@@ -395,7 +396,9 @@ void ERROR_data(char i)
     case TooLarge:
       Serial.println(F("program is too large"));
       break;
-
+    case Checksum: 
+      Serial.println(F("Checksum error"));
+      break;
     default:
       break;
   }
@@ -503,20 +506,20 @@ void dumpMemory(){
 
 // receive and translate the contents of a hex file, Program and verify on the fly
 boolean writeProgram(){
-  char datlength[] = "00";
+  char temp[] = "00";
   char addr[] = "0000";
-  char something[] = "00";
-  char chksm[] = "00";
+  uint8_t checkSum = 0;
+  uint8_t someth = 0;
   unsigned int currentByte = 0;
   progSize = 0;
   uint8_t linelength = 0;
   boolean fileEnd = false;
-  correct = true;
+
   unsigned long pgmStartTime = millis();
   eraseChip(); // erase chip
   Serial.println(F("\nSend hex file contents now"));
   char words = (type!=Tiny4_5?type:1);
-  char b1, b2;
+
   // read in the data and
   while(!fileEnd){
     startTime = millis();
@@ -536,32 +539,35 @@ boolean writeProgram(){
     }
     // read data length
 
-    datlength[0] = Sread();
-    datlength[1] = Sread();
-    linelength = byteval(datlength[0], datlength[1]);
+    temp[0] = Sread();
+    temp[1] = Sread();
+    checkSum = linelength = asciiHexToUShort(temp);
 
     // read address. if "0000" currentByte = 0
-    addr[0] = Sread();
-    addr[1] = Sread();
-    addr[2] = Sread();
-    addr[3] = Sread();
-	
-    adrs = asciiHexToUShort(addr) + 0x4000;	
-	
+    temp[0] = addr[0] = Sread();
+    temp[1] = addr[1] = Sread();
+    checkSum += asciiHexToUShort(temp);
+    temp[0] = addr[2] = Sread();
+    temp[1] = addr[3] = Sread();
+    checkSum += asciiHexToUShort(temp);
+    adrs = asciiHexToUShort(addr) + 0x4000;
     if(linelength != 0x00 && adrs == 0x4000)
       currentByte = 0;
 
     // read type thingy. "01" means end of file
-    something[0] = Sread();
-    something[1] = Sread();
-    if(something[1] == '1'){
+    temp[0] = Sread();
+    temp[1] = Sread();
+    someth = asciiHexToUShort(temp);
+    checkSum += someth;   
+    if(someth == 1){
       fileEnd = true;
     }
 
-    if(something[1] == '2'){
+    if(someth == 2){
       for (int i = 0; i<=linelength; i++){
-        Sread();
-        Sread();
+      temp[0] = Sread();
+      temp[1] = Sread();
+      checkSum += asciiHexToUShort(temp);
       }
 
     }
@@ -574,9 +580,10 @@ boolean writeProgram(){
             return false;
           }
         }
-        b1=Sread();
-        b2=Sread();
-        data[currentByte] = byteval(b1, b2);
+        temp[0]=Sread();
+        temp[1]=Sread();
+        data[currentByte] = asciiHexToUShort(temp);
+        checkSum += data[currentByte];
         currentByte++;
         progSize++;
         if(progSize > (type!=Tiny4_5?type*1024:512)){
@@ -622,7 +629,6 @@ boolean writeProgram(){
             b = tpi_receive_byte(); // get data byte
 
             if(b != data[c]){
-              correct = false;
               Serial.println(F("program error:"));
               Serial.print(F("byte "));
               outHex(adrs, 4);
@@ -631,9 +637,7 @@ boolean writeProgram(){
               Serial.print(F(" read "));
               outHex(b,2);
               Serial.println();
-
-              if(!correct)
-                return false;
+              return false;
             }
           }
           adrs += 2 * words;
@@ -648,9 +652,26 @@ boolean writeProgram(){
         return false;
       }
     }
-    chksm[0] = Sread();
-    chksm[1] = Sread();
+    temp[0] = Sread();
+    temp[1] = Sread();
+    
+    asm volatile(
+      "com  %[value]" "\n\t"
+      "inc  %[value]" "\n\t"
+      :[value] "=r" (checkSum)
+      :"[value]" (checkSum)
+    );
 
+    someth = asciiHexToUShort(temp);
+
+    if (checkSum != someth) {
+      ERROR_data(Checksum);
+      Serial.print(F("The received checksum - "));
+      Serial.println(someth, HEX);
+      Serial.print(F("The calculated checksum - "));
+      Serial.println(checkSum, HEX);
+      return false;
+    }
   }
   }
   // the program was successfully written
@@ -938,24 +959,6 @@ void writeCSS(uint8_t address, uint8_t value){
 uint8_t readCSS(uint8_t address){
   tpi_send_byte(0x80 | address);
   return tpi_receive_byte();
-}
-
-// converts two chars to one byte
-// c1 is MS, c2 is LS
-uint8_t byteval(char c1, char c2){
-  uint8_t by;
-  if(c1 <= '9'){
-    by = c1-'0';
-  }else{
-    by = c1-'A'+10;
-  }
-  by = by << 4;
-  if(c2 <= '9'){
-    by += c2-'0';
-  }else{
-    by += c2-'A'+10;
-  }
-  return by;
 }
 
 char Sread(void){
