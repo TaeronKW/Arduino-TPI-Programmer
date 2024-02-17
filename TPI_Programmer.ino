@@ -638,6 +638,7 @@ boolean writeProgram(){
               Serial.print(F(" read "));
               outHex(b,2);
               Serial.println();
+			  eraseChip();
               return false;
             }
           }
@@ -671,6 +672,7 @@ boolean writeProgram(){
       Serial.println(someth, HEX);
       Serial.print(F("The calculated checksum - "));
       Serial.println(checkSum, HEX);
+	  eraseChip();
       return false;
     }
   }
@@ -709,7 +711,7 @@ void eraseChip(){
   while((readIO(NVMCSR) & (1<<7)) != 0x00){
     // wait for erasing to finish
   }
-  Serial.println(F("chip erased"));
+  Serial.println(F("Chip erased."));
 }
 
 void setConfig(boolean val){
