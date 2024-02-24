@@ -128,7 +128,7 @@
 
 #include <SPI.h>
 #include "pins_arduino.h"
-char HVP = true; // is high voltage programming on by default?
+char HVP = false; // is high voltage programming on by default?
 char HVON = HIGH;    // what is the active level for high voltage programming?
 const char SSN = LOW;    // what is the active level for SS (reset)?
 
