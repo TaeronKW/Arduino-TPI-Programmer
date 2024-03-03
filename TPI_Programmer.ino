@@ -63,6 +63,10 @@
  * this is based                                  *
  **************************************************
  Updates:
+   Feb 12, 2024: petrov@email.su
+       * Address from HEX file.
+       * Small editing for convenience.
+	   * Added checksum calculation.
    Feb 24, 2023: KW
        * Simplified HV programming
        * Added dumpConfig() to make the set/clear flag functions more intuitive
@@ -124,8 +128,9 @@
 
 #include <SPI.h>
 #include "pins_arduino.h"
-char HVP = true; // is high voltage programming on by default?
+char HVP = false; // is high voltage programming on by default?
 char HVON = HIGH;    // what is the active level for high voltage programming?
+const char SSN = LOW;    // what is the active level for SS (reset)?
 
 // define the instruction set bytes
 #define SLD    0x20
@@ -163,6 +168,7 @@ char HVON = HIGH;    // what is the active level for high voltage programming?
 #define TimeOut 1
 #define HexError 2
 #define TooLarge 3
+#define Checksum 4
 // represents the current pointer register value
 unsigned short adrs = 0x0000;
 
@@ -175,7 +181,7 @@ long startTime;
 int timeout;
 uint8_t b, b1, b2, b3;
 boolean idChecked;
-boolean correct;
+//boolean correct;
 char type; // type of chip connected 1 = Tiny10, 2 = Tiny20
 
 int counti = 0;
@@ -183,22 +189,17 @@ int counti = 0;
 void setup(){
   // set up serial
   Serial.begin(9600); // you cant increase this, it'll overrun the buffer
-  // set up SPI
-/*  SPI.begin();
-  SPI.setBitOrder(LSBFIRST);
-  SPI.setDataMode(SPI_MODE0);
-  SPI.setClockDivider(SPI_CLOCK_DIV32);
 
-*/  
-  digitalWrite(HVReset, !HVON);
-  digitalWrite(SS, !HVP);
-  pinMode(HVReset, OUTPUT);
-  pinMode(SS, OUTPUT);
-//  quickReset();
-//  digitalWrite(HVReset, LOW);
-//  digitalWrite(SS, HIGH);
-//delay(5000);
-  digitalWrite(HVReset, HIGH);
+	
+		digitalWrite(HVReset, !HVON);
+		pinMode(HVReset, OUTPUT);	
+
+
+		digitalWrite(SS, !SSN);
+		pinMode(SS, OUTPUT);
+
+  
+
 delay(1000);
 
   start_tpi();
@@ -219,9 +220,10 @@ void hvserial()
     else
         Serial.println(F("High Voltage Programming Disabled"));
 
-    Serial.print(F("Pin 9 "));
-    Serial.print(HVON?F("HIGH"):F("LOW"));
-    Serial.print(F(" supplies 12v"));
+    Serial.print(F("Pin "));
+	Serial.print(HVReset);
+    Serial.print(HVON?F(" HIGH"):F(" LOW"));
+    Serial.println(F(" supplies 12v"));
 
 }
 
@@ -235,11 +237,14 @@ void hvReset(char highLow)
         digitalWrite(HVReset, highLow);
     }
     else
+        if(SSN) //if high enables 12v
+            highLow = !highLow; // invert the typical reset
         digitalWrite(SS, highLow);
 }
 
 void quickReset()
 {
+    Serial.println(F("Reset."));
     //digitalWrite(SS,HIGH);
     hvReset(HIGH);
     delay(1);
@@ -284,11 +289,18 @@ void loop(){
     finish();
   }
   // when ready, send ready signal '.' and wait
+  Serial.println();
+  Serial.println(F("'P' = program the ATtiny using the read program"));
+  Serial.println(F("'D' = dump memory to serial monitor"));
+  Serial.println(F("'E' = erase chip. erases current program memory.(done automatically by 'P')"));
+  Serial.println(F("'S' = set fuse"));
+  Serial.println(F("'C' = clear fuse"));
+  Serial.println(F("'H' = Toggle High Voltage Programming"));
+  Serial.println(F("'T' = Toggle +12v enabled by High, or Low"));
   Serial.print(F("\n>"));
   while(Serial.available() < 1){
     // wait
   }
-  start_tpi();
 
   // the first byte is a command
   //** 'P' = program the ATtiny using the read program
@@ -307,7 +319,9 @@ void loop(){
 
     case 'd':
     case 'D':
+      start_tpi();
       dumpMemory();
+      finish();
       break;
 
   case 'h':
@@ -324,26 +338,34 @@ void loop(){
 
   case 'p':
   case 'P':
+      start_tpi();
       if(!writeProgram()){
         startTime = millis();
         while(millis()-startTime < 8000)
           Serial.read();// if exited due to error, disregard all other serial data
       }
+      finish();
     break;
 
   case 'e':
   case 'E':
+    start_tpi();
     eraseChip();
+    finish();
     break;
 
   case 's':
   case 'S':
+    start_tpi();
     setConfig(true);
+    finish();
     break;
 
   case 'c':
   case 'C':
+    start_tpi();
     setConfig(false);
+    finish();
     break;
 
   case ' ':
@@ -353,7 +375,7 @@ void loop(){
     Serial.println(F("Received unknown command"));
   }
 
-  finish();
+
 
 
 }
@@ -375,7 +397,9 @@ void ERROR_data(char i)
     case TooLarge:
       Serial.println(F("program is too large"));
       break;
-
+    case Checksum: 
+      Serial.println(F("Checksum error"));
+      break;
     default:
       break;
   }
@@ -483,22 +507,20 @@ void dumpMemory(){
 
 // receive and translate the contents of a hex file, Program and verify on the fly
 boolean writeProgram(){
-  char datlength[] = "00";
+  char temp[] = "00";
   char addr[] = "0000";
-  char something[] = "00";
-  char chksm[] = "00";
+  uint8_t checkSum = 0;
+  uint8_t someth = 0;
   unsigned int currentByte = 0;
   progSize = 0;
   uint8_t linelength = 0;
   boolean fileEnd = false;
-  unsigned short tadrs;
-  tadrs = adrs = 0x4000;
-  correct = true;
+
   unsigned long pgmStartTime = millis();
   eraseChip(); // erase chip
   Serial.println(F("\nSend hex file contents now"));
   char words = (type!=Tiny4_5?type:1);
-  char b1, b2;
+
   // read in the data and
   while(!fileEnd){
     startTime = millis();
@@ -518,29 +540,35 @@ boolean writeProgram(){
     }
     // read data length
 
-    datlength[0] = Sread();
-    datlength[1] = Sread();
-    linelength = byteval(datlength[0], datlength[1]);
+    temp[0] = Sread();
+    temp[1] = Sread();
+    checkSum = linelength = asciiHexToUShort(temp);
 
     // read address. if "0000" currentByte = 0
-    addr[0] = Sread();
-    addr[1] = Sread();
-    addr[2] = Sread();
-    addr[3] = Sread();
-    if(linelength != 0x00 && addr[0]=='0' && addr[1]=='0' && addr[2]=='0' && addr[3]=='0')
+    temp[0] = addr[0] = Sread();
+    temp[1] = addr[1] = Sread();
+    checkSum += asciiHexToUShort(temp);
+    temp[0] = addr[2] = Sread();
+    temp[1] = addr[3] = Sread();
+    checkSum += asciiHexToUShort(temp);
+    adrs = asciiHexToUShort(addr) + 0x4000;
+    if(linelength != 0x00 && adrs == 0x4000)
       currentByte = 0;
 
     // read type thingy. "01" means end of file
-    something[0] = Sread();
-    something[1] = Sread();
-    if(something[1] == '1'){
+    temp[0] = Sread();
+    temp[1] = Sread();
+    someth = asciiHexToUShort(temp);
+    checkSum += someth;   
+    if(someth == 1){
       fileEnd = true;
     }
 
-    if(something[1] == '2'){
+    if(someth == 2){
       for (int i = 0; i<=linelength; i++){
-        Sread();
-        Sread();
+      temp[0] = Sread();
+      temp[1] = Sread();
+      checkSum += asciiHexToUShort(temp);
       }
 
     }
@@ -553,9 +581,10 @@ boolean writeProgram(){
             return false;
           }
         }
-        b1=Sread();
-        b2=Sread();
-        data[currentByte] = byteval(b1, b2);
+        temp[0]=Sread();
+        temp[1]=Sread();
+        data[currentByte] = asciiHexToUShort(temp);
+        checkSum += data[currentByte];
         currentByte++;
         progSize++;
         if(progSize > (type!=Tiny4_5?type*1024:512)){
@@ -575,7 +604,7 @@ boolean writeProgram(){
         if( currentByte == 2 * words ){// is the word/Dword/Qword here?
 
           currentByte = 0; // yes, reset counter
-          setPointer(tadrs); // point to the address to program
+          setPointer(adrs); // point to the address to program
           writeIO(NVMCMD, NVM_WORD_WRITE);
           for(int i = 0; i<2 * words; i+=2){// loop for each word size depending on micro
 
@@ -595,13 +624,12 @@ boolean writeProgram(){
 
 
           //verify written words
-          setPointer(tadrs);
+          setPointer(adrs);
           for (int c = 0; c < 2 * words; c++){
             tpi_send_byte(SLDp);
             b = tpi_receive_byte(); // get data byte
 
             if(b != data[c]){
-              correct = false;
               Serial.println(F("program error:"));
               Serial.print(F("byte "));
               outHex(adrs, 4);
@@ -610,12 +638,11 @@ boolean writeProgram(){
               Serial.print(F(" read "));
               outHex(b,2);
               Serial.println();
-
-              if(!correct)
-                return false;
+			  eraseChip();
+              return false;
             }
           }
-          tadrs += 2 * words;
+          adrs += 2 * words;
       }
      }
 
@@ -627,9 +654,27 @@ boolean writeProgram(){
         return false;
       }
     }
-    chksm[0] = Sread();
-    chksm[1] = Sread();
+    temp[0] = Sread();
+    temp[1] = Sread();
+    
+    asm volatile(
+      "com  %[value]" "\n\t"
+      "inc  %[value]" "\n\t"
+      :[value] "=r" (checkSum)
+      :"[value]" (checkSum)
+    );
 
+    someth = asciiHexToUShort(temp);
+
+    if (checkSum != someth) {
+      ERROR_data(Checksum);
+      Serial.print(F("The received checksum - "));
+      Serial.println(someth, HEX);
+      Serial.print(F("The calculated checksum - "));
+      Serial.println(checkSum, HEX);
+	  eraseChip();
+      return false;
+    }
   }
   }
   // the program was successfully written
@@ -666,7 +711,7 @@ void eraseChip(){
   while((readIO(NVMCSR) & (1<<7)) != 0x00){
     // wait for erasing to finish
   }
-  Serial.println(F("chip erased"));
+  Serial.println(F("Chip erased."));
 }
 
 void setConfig(boolean val){
@@ -919,24 +964,6 @@ uint8_t readCSS(uint8_t address){
   return tpi_receive_byte();
 }
 
-// converts two chars to one byte
-// c1 is MS, c2 is LS
-uint8_t byteval(char c1, char c2){
-  uint8_t by;
-  if(c1 <= '9'){
-    by = c1-'0';
-  }else{
-    by = c1-'A'+10;
-  }
-  by = by << 4;
-  if(c2 <= '9'){
-    by += c2-'0';
-  }else{
-    by += c2-'A'+10;
-  }
-  return by;
-}
-
 char Sread(void){
   while(Serial.available()<1){}
   return Serial.read();
@@ -951,6 +978,29 @@ void outHex(unsigned int n, char l){ // call with the number to be printed, and 
             break;  //exit the for loop
         }
     Serial.print(n, HEX);
+}
+
+#define CURRENT_DIGIT (*str)
+
+unsigned short asciiHexToUShort( char * str )
+{
+    int result = 0;
+
+    do
+    {
+        if ( (CURRENT_DIGIT >= '0') && (CURRENT_DIGIT <= '9') )
+        {
+            CURRENT_DIGIT = CURRENT_DIGIT - '0' + 0x0;
+        }
+        else if ( (CURRENT_DIGIT >= 'A') && (CURRENT_DIGIT <= 'F') )
+        {
+            CURRENT_DIGIT = CURRENT_DIGIT - 'A' + 0xA;
+        }
+        
+        result = (result<<4) + CURRENT_DIGIT;
+    }while (*++str);
+
+    return result;
 }
 
 // end of file
